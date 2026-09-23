@@ -1,0 +1,22 @@
+# Build output
+build/
+.gradle/
+.kotlin/
+.cxx/
+
+# IDE
+.idea/
+*.iml
+.DS_Store
+
+# Machine-local
+local.properties
+
+# Signing material, never commit
+keystore.properties
+*.jks
+*.keystore
+# research record: competitor analysis and sales estimates stay private
+IDEA.json
+SHIP-READY.md
+store/smoke-*.png

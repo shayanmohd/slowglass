@@ -1,0 +1,41 @@
+{
+  "background": [
+    "#7A45DE"
+  ],
+  "text": "#F7F4FF",
+  "frame": "#15141C",
+  "font": "fonts/hanken_grotesk_semibold.ttf",
+  "weight": 600,
+  "shots": [
+    {
+      "src": "screenshots-raw/01-light-trails-building.png",
+      "out": "screenshots/01-light-trails-building.png",
+      "caption": "Light trails build while you watch"
+    },
+    {
+      "src": "screenshots-raw/02-silky-water-saved.png",
+      "out": "screenshots/02-silky-water-saved.png",
+      "caption": "Silky water from any steady spot"
+    },
+    {
+      "src": "screenshots-raw/03-lightning-strike-saved.png",
+      "out": "screenshots/03-lightning-strike-saved.png",
+      "caption": "Lightning caught before the flash"
+    },
+    {
+      "src": "screenshots-raw/04-library.png",
+      "out": "screenshots/04-library.png",
+      "caption": "A library of every long exposure"
+    },
+    {
+      "src": "screenshots-raw/05-exposure-length.png",
+      "out": "screenshots/05-exposure-length.png",
+      "caption": "Stop when it looks right"
+    },
+    {
+      "src": "screenshots-raw/06-camera-check.png",
+      "out": "screenshots/06-camera-check.png",
+      "caption": "Know what your phone can do"
+    }
+  ]
+}

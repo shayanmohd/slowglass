@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Slowglass Long Exposure Camera for Android</title>
+<meta name="description" content="A long exposure camera for Android. Light trails, silky water, motion blur, star trails and lightning build on screen while you watch. One price, fully offline.">
+<link rel="icon" href="shots/icon.png">
+<style>
+  @font-face { font-family: "Michroma"; src: url("fonts/michroma_regular.ttf"); font-display: swap; }
+  @font-face { font-family: "Hanken Grotesk"; src: url("fonts/hanken_grotesk_regular.ttf"); font-weight: 400; font-display: swap; }
+  @font-face { font-family: "Hanken Grotesk"; src: url("fonts/hanken_grotesk_semibold.ttf"); font-weight: 600; font-display: swap; }
+  :root {
+    --dusk: #15141C; --pane: #1F1D28; --ink: #E7E5EF; --haze: #A3A0B4; --uv: #AE9FE8; --on-uv: #15141C;
+    --line: rgba(163, 160, 180, 0.24);
+  }
+  * { box-sizing: border-box; }
+  html { background: var(--dusk); }
+  body { margin: 0; background: var(--dusk); color: var(--ink); font: 18px/1.6 "Hanken Grotesk", system-ui, sans-serif; }
+  a { color: var(--uv); }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
+  .engraved { font-family: "Michroma", sans-serif; font-weight: 400; letter-spacing: 0.01em; }
+  header.top { display: flex; align-items: center; gap: 12px; padding: 20px 0; }
+  header.top img { width: 36px; height: 36px; border-radius: 9px; }
+  header.top span { font-family: "Michroma", sans-serif; font-size: 15px; }
+
+  /* Hero: copy left, the live viewfinder right. */
+  .hero { display: grid; grid-template-columns: 1.1fr 0.9fr; gap: 56px; align-items: center; padding: 32px 0 80px; }
+  .hero h1 { font-family: "Michroma", sans-serif; font-weight: 400; font-size: clamp(32px, 4.4vw, 50px); line-height: 1.18; margin: 0 0 22px; }
+  .hero p.sub { color: var(--haze); font-size: 20px; max-width: 30em; margin: 0 0 32px; }
+  .cta { display: inline-block; background: var(--uv); color: var(--on-uv); text-decoration: none; font-weight: 600;
+    padding: 15px 26px; border-radius: 12px; font-size: 17px; }
+  .cta { transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), filter 0.2s; }
+  .cta:hover { filter: brightness(1.06); }
+  .cta:active { transform: translateY(1px); }
+  .cta:focus-visible { outline: 2px solid var(--uv); outline-offset: 3px; }
+  /* Radius rule: screenshots 24px, the button 12px. */
+  .phone { justify-self: center; width: min(360px, 100%); border-radius: 24px; border: 1px solid var(--line); overflow: hidden; background: var(--pane); }
+  .phone img { display: block; width: 100%; height: auto; }
+
+  /* Modes: a quiet list beside the saved photo. */
+  .modes { display: grid; grid-template-columns: 0.8fr 1.2fr; gap: 64px; align-items: center; padding: 72px 0; border-top: 1px solid var(--line); }
+  .modes h2, .check h2 { font-weight: 600; font-size: 30px; line-height: 1.25; margin: 0 0 20px; }
+  .modes dl { margin: 0; display: grid; grid-template-columns: 9.5em 1fr; row-gap: 14px; column-gap: 18px; }
+  .modes dt { font-family: "Michroma", sans-serif; font-size: 13px; color: var(--uv); padding-top: 5px; }
+  .modes dd { margin: 0; color: var(--haze); }
+  .modes figure { margin: 0; justify-self: center; width: min(340px, 100%); border-radius: 24px; overflow: hidden; border: 1px solid var(--line); }
+  .modes figure img { display: block; width: 100%; }
+
+  /* The honest part: copy stacked over a row of two captioned screens. */
+  .check { padding: 72px 0; border-top: 1px solid var(--line); }
+  .check p { color: var(--haze); max-width: 62ch; margin: 0 0 12px; }
+  .check .shots { display: grid; grid-template-columns: repeat(2, minmax(0, 280px)); gap: 32px; margin-top: 44px; }
+  .check figure { margin: 0; }
+  .check .shots img { width: 100%; border-radius: 24px; border: 1px solid var(--line); display: block; }
+  .check figcaption { color: var(--haze); font-size: 15px; margin-top: 12px; }
+
+  /* The promise, stated once, large. */
+  .promise { padding: 88px 0 96px; border-top: 1px solid var(--line); }
+  .promise p.big { font-family: "Michroma", sans-serif; font-size: clamp(20px, 2.6vw, 30px); line-height: 1.5; margin: 0 0 20px; max-width: 26em; }
+  .promise p.price { font-weight: 600; font-size: 20px; margin: 0 0 12px; }
+  .promise p.small { color: var(--haze); margin: 0; max-width: 36em; }
+
+  footer { border-top: 1px solid var(--line); padding: 28px 0 48px; color: var(--haze); font-size: 15px; display: flex; flex-wrap: wrap; gap: 8px 28px; }
+
+  @media (max-width: 767px) {
+    body { font-size: 17px; }
+    .hero, .modes { grid-template-columns: 1fr; gap: 36px; }
+    .check .shots { grid-template-columns: 1fr 1fr; gap: 16px; }
+    .hero { padding-top: 12px; }
+    .modes dl { grid-template-columns: 1fr; row-gap: 4px; }
+    .modes dd { margin-bottom: 10px; }
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --dusk: #EEEDF3; --pane: #F8F7FB; --ink: #1B1A24; --haze: #585566; --uv: #5B3FC4; --on-uv: #F8F7FB; --line: rgba(88, 85, 102, 0.24); }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <img src="shots/icon.png" alt="">
+    <span>Slowglass</span>
+  </header>
+
+  <section class="hero">
+    <div>
+      <h1>Long exposures that build while you watch</h1>
+      <p class="sub">Put the phone somewhere steady, tap once, and watch tail lights draw across the screen.</p>
+      <a class="cta" href="https://play.google.com/store/apps/details?id=com.mohdshayan.slowglass">Get it on Google Play</a>
+    </div>
+    <div class="phone"><img src="shots/01-light-trails-building.jpg" alt="Slowglass building light trails from a night street, 54 seconds into a one minute exposure"></div>
+  </section>
+
+  <section class="modes">
+    <figure><img src="shots/02-silky-water-saved.jpg" alt="A waterfall turned to mist, saved to Pictures/Slowglass"></figure>
+    <div>
+      <h2>Five ways to slow the glass</h2>
+      <dl>
+        <dt>Trails</dt><dd>Headlights draw lines across the frame.</dd>
+        <dt>Water</dt><dd>Waterfalls and waves turn to mist.</dd>
+        <dt>Motion</dt><dd>Traffic smears while street lights stay sharp.</dd>
+        <dt>Stars</dt><dd>Bright stars and planets drawn into arcs over a long session.</dd>
+        <dt>Lightning</dt><dd>Each strike saved from the frames just before the flash.</dd>
+      </dl>
+    </div>
+  </section>
+
+  <section class="check">
+    <h2>It tells you what your phone can do</h2>
+    <p>A five second camera check on first launch measures the stream size, the frame rate while stacking, and whether star settings work. Photos save at the size the camera streams to the app, often 1920 x 1080, and Slowglass never calls that full resolution.</p>
+    <p>The check runs on your own phone, so you know the result before you rely on it.</p>
+    <div class="shots">
+      <figure><img src="shots/06-camera-check.jpg" alt="The camera check result: stream size, frame rate, precision and focus"><figcaption>The camera check on first launch.</figcaption></figure>
+      <figure><img src="shots/03-lightning-strike-saved.jpg" alt="Lightning mode saving its third strike"><figcaption>Lightning, third strike saved.</figcaption></figure>
+    </div>
+  </section>
+
+  <section class="promise">
+    <p class="big">One-time purchase. No ads, no subscription, no account. Works fully offline.</p>
+    <p class="price">USD 2.99 once, INR 149 in India. Everything is included.</p>
+    <p class="small">Slowglass has no internet permission. Your photos are ordinary files in Pictures/Slowglass, and the session log exports to JSON or CSV whenever you want it.</p>
+  </section>
+
+  <footer>
+    <span>Slowglass by SocialSure Private Limited</span>
+    <a href="privacy-policy.html">Privacy policy</a>
+  </footer>
+</div>
+</body>
+</html>
