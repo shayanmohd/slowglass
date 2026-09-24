@@ -22,7 +22,8 @@ import java.util.Locale
 /** The words and numbers written into each photo's EXIF. */
 data class PhotoMeta(
     val takenAt: Long,
-    val exposureRational: String,
+    /** EXIF ExposureTime such as "42/1" or "1/30"; null leaves it out. */
+    val exposureRational: String?,
     val comment: String,
 )
 
@@ -62,10 +63,13 @@ class PhotoSaver(private val context: Context) {
         exif.setAttribute(ExifInterface.TAG_DATETIME_ORIGINAL, stamp)
         exif.setAttribute(ExifInterface.TAG_DATETIME, stamp)
         // ExifInterface takes ExposureTime as decimal seconds and stores it as a rational.
-        val (num, den) = meta.exposureRational.split('/').map { it.toDouble() }
-        exif.setAttribute(ExifInterface.TAG_EXPOSURE_TIME, (num / den).toString())
+        meta.exposureRational?.let { r ->
+            val (num, den) = r.split('/').map { it.toDouble() }
+            exif.setAttribute(ExifInterface.TAG_EXPOSURE_TIME, (num / den).toString())
+        }
+        // ImageDescription only. ExifInterface writes UserComment as a plain ASCII string instead of
+        // an 8-byte charset code plus text, so standard readers showed just "ASCII".
         exif.setAttribute(ExifInterface.TAG_IMAGE_DESCRIPTION, meta.comment)
-        exif.setAttribute(ExifInterface.TAG_USER_COMMENT, "ASCII\u0000\u0000\u0000" + meta.comment)
         exif.setAttribute(ExifInterface.TAG_SOFTWARE, "Slowglass")
         exif.setAttribute(ExifInterface.TAG_MAKE, Build.MANUFACTURER)
         exif.setAttribute(ExifInterface.TAG_MODEL, Build.MODEL)

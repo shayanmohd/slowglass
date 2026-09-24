@@ -306,7 +306,12 @@ fun CaptureScreen(
                 modifier = Modifier.align(Alignment.TopCenter),
                 endInset = if (wide) 240.dp else 0.dp,
             )
-            CameraProblem(engine.camera, onRetry = vm::retryCamera, modifier = Modifier.align(Alignment.Center))
+            val interrupted = engine.interrupted
+            if (interrupted != null && engine.phase == Phase.Idle) {
+                InterruptedCard(interrupted, onDismiss = vm::dismissInterrupted, modifier = Modifier.align(Alignment.Center))
+            } else {
+                CameraProblem(engine.camera, onRetry = vm::retryCamera, modifier = Modifier.align(Alignment.Center))
+            }
             BottomControls(
                 engine = engine,
                 settings = s,
@@ -644,6 +649,7 @@ private fun CameraProblem(status: CamStatus, onRetry: () -> Unit, modifier: Modi
         CamStatus.DISABLED -> "The camera is turned off on this phone. Turn it on in quick settings, then tap to retry."
         CamStatus.NO_CAMERA -> "This phone has no back camera that Slowglass can use."
         CamStatus.FAILED -> "The camera stopped responding. Tap to retry."
+        CamStatus.STALLED -> "The camera has not started. Tap to retry."
         else -> null
     } ?: return
     Column(
@@ -660,6 +666,23 @@ private fun CameraProblem(status: CamStatus, onRetry: () -> Unit, modifier: Modi
             Spacer(Modifier.height(12.dp))
             OutlinedButton(shape = ButtonShape, onClick = onRetry, modifier = Modifier.heightIn(min = 48.dp)) { Text("Retry") }
         }
+    }
+}
+
+/** A session the system killed before it could save: said once, plainly, on the next launch. */
+@Composable
+private fun InterruptedCard(message: String, onDismiss: () -> Unit, modifier: Modifier = Modifier) {
+    Column(
+        modifier
+            .padding(24.dp)
+            .widthIn(max = 420.dp)
+            .clip(RoundedCornerShape(RadiusMd))
+            .background(ViewfinderScrim)
+            .padding(20.dp),
+    ) {
+        Text(message, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onBackground)
+        Spacer(Modifier.height(12.dp))
+        OutlinedButton(shape = ButtonShape, onClick = onDismiss, modifier = Modifier.heightIn(min = 48.dp)) { Text("OK") }
     }
 }
 

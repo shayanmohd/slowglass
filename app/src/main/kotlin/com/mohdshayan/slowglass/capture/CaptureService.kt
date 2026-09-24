@@ -11,6 +11,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.hardware.display.DisplayManager
 import android.net.Uri
 import android.os.BatteryManager
 import android.os.Binder
@@ -18,6 +19,7 @@ import android.os.IBinder
 import android.os.PowerManager
 import android.os.SystemClock
 import android.util.Size
+import android.view.Display
 import android.view.OrientationEventListener
 import android.view.Surface
 import androidx.core.app.NotificationCompat
@@ -30,11 +32,14 @@ import com.mohdshayan.slowglass.R
 import com.mohdshayan.slowglass.core.check.CheckMeasurements
 import com.mohdshayan.slowglass.core.check.CheckVerdict
 import com.mohdshayan.slowglass.core.exif.ExifText
+import com.mohdshayan.slowglass.core.orient.OrientationLatch
 import com.mohdshayan.slowglass.core.orient.OrientationMapper
 import com.mohdshayan.slowglass.core.stack.StackMode
 import com.mohdshayan.slowglass.core.stars.GapBridge
 import com.mohdshayan.slowglass.core.timer.ExposureClock
+import com.mohdshayan.slowglass.core.timer.InProgressSession
 import com.mohdshayan.slowglass.core.timer.SessionGuard
+import com.mohdshayan.slowglass.core.timer.SessionPulse
 import com.mohdshayan.slowglass.core.timer.StopReason
 import com.mohdshayan.slowglass.data.db.CameraCheckEntity
 import com.mohdshayan.slowglass.data.db.SessionEntity
@@ -88,13 +93,14 @@ class CaptureService : LifecycleService(), StackRenderer.Listener {
     private var uiVisible = false
     private var checkRunning = false
     private var sessionActive = false
-    private var cameraReady = false
+    @Volatile private var cameraReady = false
     private var holds4k = false
     private var tappedFocus = false
     private var evUser = 0f
 
-    private val mapper = OrientationMapper()
+    private val orientation = OrientationLatch()
     private var orientationListener: OrientationEventListener? = null
+    private var orientationOn = false
     private var wakeLock: PowerManager.WakeLock? = null
     private var thermal = 0
     private var thermalListener: PowerManager.OnThermalStatusChangedListener? = null
@@ -106,6 +112,9 @@ class CaptureService : LifecycleService(), StackRenderer.Listener {
     private var sessionMode = StackMode.TRAILS
     private var sessionSettings = Settings()
     private val runningFrames = AtomicInteger(0)
+    // First and latest camera timestamps while stacking, for the real frame duration.
+    private val runFirstNs = AtomicLong(0)
+    private val runLastNs = AtomicLong(0)
     private val strikes = mutableListOf<StrikeEntity>()
     private var pending: PendingSave? = null
     private var clip: ClipSource? = null
@@ -121,6 +130,8 @@ class CaptureService : LifecycleService(), StackRenderer.Listener {
         val result: StackResult,
         val mode: StackMode,
         val durationMs: Long,
+        /** Average camera frame interval while stacking, or 0 when fewer than two frames came. */
+        val frameNs: Long,
         val rotation: Int,
         val settings: Settings,
         val strikes: List<StrikeEntity>,
@@ -137,7 +148,17 @@ class CaptureService : LifecycleService(), StackRenderer.Listener {
             cameraReady = s == CamStatus.READY
             _state.update { it.copy(camera = s) }
         }
+        orientationListener = object : OrientationEventListener(this) {
+            override fun onOrientationChanged(angle: Int) {
+                orientation.onAngle(if (angle == ORIENTATION_UNKNOWN) -1 else angle)
+            }
+        }
         createChannel(this)
+        lifecycleScope.launch {
+            // A session still recorded as running belonged to a process that was killed mid exposure.
+            val lost = prefs.inProgress()
+            if (lost != null && !sessionActive) _state.update { it.copy(interrupted = lost.message()) }
+        }
         lifecycleScope.launch {
             holds4k = repo.latestCheck()?.holds4k == true
             prefs.settings.collect { s ->
@@ -249,6 +270,25 @@ class CaptureService : LifecycleService(), StackRenderer.Listener {
         if (open && camera.camera == null) rebindIfNeeded()
         if (!open) _state.update { it.copy(streaming = false) }
         camera.setOpen(open)
+        setOrientationListening(open)
+    }
+
+    /** The orientation listener runs while the camera is open, so a session has a fresh reading. */
+    private fun setOrientationListening(on: Boolean) {
+        if (on == orientationOn) return
+        orientationOn = on
+        val l = orientationListener ?: return
+        if (on) {
+            if (l.canDetectOrientation()) l.enable()
+        } else {
+            l.disable()
+            orientation.forget()
+        }
+    }
+
+    private fun displayRotationDegrees(): Int {
+        val d = getSystemService(DisplayManager::class.java).getDisplay(Display.DEFAULT_DISPLAY) ?: return 0
+        return d.rotation * 90
     }
 
     fun onPermissionGranted() {
@@ -318,6 +358,12 @@ class CaptureService : LifecycleService(), StackRenderer.Listener {
 
     fun clearNotice() = _state.update { it.copy(notice = null) }
 
+    /** The user read that the last exposure was interrupted. */
+    fun dismissInterrupted() {
+        _state.update { it.copy(interrupted = null) }
+        lifecycleScope.launch { prefs.clearInProgress() }
+    }
+
     // ---- sessions ----
 
     /** Called from the shutter. Starts this service in the foreground, then counts down and stacks. */
@@ -335,7 +381,7 @@ class CaptureService : LifecycleService(), StackRenderer.Listener {
 
     private fun goForeground() {
         try {
-            ServiceCompat.startForeground(this, NOTIFICATION_ID, buildNotification("Starting", ""), ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA)
+            ServiceCompat.startForeground(this, NOTIFICATION_ID, buildNotification("Starting", "", null), ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA)
         } catch (e: Exception) {
             // Android refused the foreground start; the session still runs while Slowglass is on screen.
         }
@@ -347,23 +393,20 @@ class CaptureService : LifecycleService(), StackRenderer.Listener {
         sessionSettings = settings
         strikes.clear()
         runningFrames.set(0)
-        _state.update { it.copy(outcome = null, strikes = 0, frames = 0, notice = null) }
-        orientationListener = object : OrientationEventListener(this) {
-            override fun onOrientationChanged(orientation: Int) {
-                mapper.onAngle(if (orientation == ORIENTATION_UNKNOWN) -1 else orientation)
-            }
-        }.also { if (it.canDetectOrientation()) it.enable() }
+        _state.update { it.copy(outcome = null, strikes = 0, frames = 0, notice = null, interrupted = null) }
         sessionJob = lifecycleScope.launch {
             for (n in sessionSettings.tripodDelayS downTo 1) {
                 _state.update { it.copy(phase = Phase.Countdown(n)) }
-                notify(sessionMode.label, "Starting in $n")
+                notify(sessionMode.label, "Starting in $n", null)
                 delay(1000)
             }
             applyModeOptions(lock = true)
             val facts = camera.facts
             val longSide = maxOf(renderer.outWidth, renderer.outHeight)
             val ppd = GapBridge.pixelsPerDegree(facts?.focalMm, facts?.sensorWidthMm, longSide, _state.value.zoom.toDouble())
-            sessionRotation = OrientationMapper.photoRotation(mapper.held)
+            // Latched once: a phone lying flat reports no angle, so this falls back to the last
+            // reliable reading while the viewfinder was open, then to the display's orientation.
+            sessionRotation = orientation.latch(displayRotationDegrees())
             clip?.rewind()
             val lowRam = getSystemService(ActivityManager::class.java).isLowRamDevice
             renderer.beginSession(
@@ -380,13 +423,16 @@ class CaptureService : LifecycleService(), StackRenderer.Listener {
                     preRollFrames = if (lowRam) 3 else 6,
                 ),
             )
+            runFirstNs.set(0)
+            runLastNs.set(0)
             startedWall = System.currentTimeMillis()
             startedRealtime = SystemClock.elapsedRealtime()
             _state.update {
                 it.copy(phase = Phase.Running(startedRealtime), outputWidth = renderer.outWidth, outputHeight = renderer.outHeight)
             }
             acquireWakeLock()
-            var lastNotify = 0L
+            var lastPulse: Long? = null
+            var strikesPosted = 0
             while (true) {
                 delay(250)
                 val elapsed = SystemClock.elapsedRealtime() - startedRealtime
@@ -401,9 +447,12 @@ class CaptureService : LifecycleService(), StackRenderer.Listener {
                     stopSession(reason)
                     break
                 }
-                if (elapsed - lastNotify >= 1000) {
-                    lastNotify = elapsed
-                    notify("${sessionMode.label} ${ExposureClock.format(elapsed)}", progressText())
+                // The notification clock is a chronometer; only the count and the record wait for a pulse.
+                if (SessionPulse.due(elapsed, lastPulse, strikesPosted, strikes.size)) {
+                    lastPulse = elapsed
+                    strikesPosted = strikes.size
+                    notify(sessionMode.label, progressText(), startedWall)
+                    prefs.markInProgress(InProgressSession(sessionMode.id, startedWall, System.currentTimeMillis(), strikesPosted))
                 }
             }
         }
@@ -414,7 +463,9 @@ class CaptureService : LifecycleService(), StackRenderer.Listener {
             val n = strikes.size
             if (n == 1) "1 strike saved" else "$n strikes saved"
         } else {
-            String.format(Locale.US, "%,d frames stacked", runningFrames.get())
+            // The first pulse comes as stacking starts, often at a single frame.
+            val n = runningFrames.get()
+            if (n == 1) "1 frame stacked" else String.format(Locale.US, "%,d frames stacked", n)
         }
 
     fun stopSession(reason: StopReason) {
@@ -430,6 +481,7 @@ class CaptureService : LifecycleService(), StackRenderer.Listener {
         sessionJob?.cancel()
         sessionJob = null
         val duration = SystemClock.elapsedRealtime() - startedRealtime
+        val frameNs = runningFrames.get().let { n -> if (n >= 2) (runLastNs.get() - runFirstNs.get()) / (n - 1) else 0L }
         val mode = sessionMode
         val rotation = sessionRotation
         val s = sessionSettings
@@ -451,7 +503,7 @@ class CaptureService : LifecycleService(), StackRenderer.Listener {
                     prefs.recordSession(false, 0)
                     return@launch
                 }
-                pending = PendingSave(result, mode, duration, rotation, s, strikes.toList())
+                pending = PendingSave(result, mode, duration, frameNs, rotation, s, strikes.toList())
                 persist()
             }
         }
@@ -475,7 +527,8 @@ class CaptureService : LifecycleService(), StackRenderer.Listener {
             val stackUri = saver.save(stack, p.rotation, "$stem.jpg", meta)
             val sharp = p.result.sharpest
             val sharpUri = if (p.settings.saveSharpest && sharp != null) {
-                saver.save(sharp, p.rotation, "${stem}_sharpest.jpg", PhotoMeta(startedWall, "1/30", "Slowglass ${p.mode.label}, sharpest single frame"))
+                val frameTime = ExifText.frameExposureRational(p.frameNs)
+                saver.save(sharp, p.rotation, "${stem}_sharpest.jpg", PhotoMeta(startedWall, frameTime, "Slowglass ${p.mode.label}, sharpest single frame"))
             } else {
                 null
             }
@@ -535,8 +588,7 @@ class CaptureService : LifecycleService(), StackRenderer.Listener {
 
     private fun endSession() {
         sessionActive = false
-        orientationListener?.disable()
-        orientationListener = null
+        lifecycleScope.launch { prefs.clearInProgress() }
         releaseWakeLock()
         tappedFocus = false
         applyModeOptions(lock = false)
@@ -570,10 +622,15 @@ class CaptureService : LifecycleService(), StackRenderer.Listener {
 
     override fun onStreamFrame(timestampNs: Long) {
         streamFrames.incrementAndGet()
+        // Frames reaching the renderer prove the camera open even when CameraX never publishes OPEN.
+        if (clip == null) camera.onFrame()
         if (!_state.value.streaming) {
             _state.update { it.copy(streaming = true, outputWidth = renderer.outWidth, outputHeight = renderer.outHeight) }
         }
-        if (_state.value.phase is Phase.Running) runningFrames.incrementAndGet()
+        if (_state.value.phase is Phase.Running) {
+            if (runningFrames.incrementAndGet() == 1) runFirstNs.set(timestampNs)
+            runLastNs.set(timestampNs)
+        }
         if (measuring) {
             if (measureCount.getAndIncrement() == 0) measureFirst.set(timestampNs)
             measureLast.set(timestampNs)
@@ -600,7 +657,7 @@ class CaptureService : LifecycleService(), StackRenderer.Listener {
     }
 
     override fun onGlError(message: String) {
-        lifecycleScope.launch { _state.update { it.copy(camera = CamStatus.FAILED) } }
+        camera.fail()
     }
 
     // ---- camera check ----
@@ -710,17 +767,18 @@ class CaptureService : LifecycleService(), StackRenderer.Listener {
 
     // ---- notification ----
 
-    private fun notify(title: String, text: String) {
+    private fun notify(title: String, text: String, chronometerFrom: Long?) {
         if (!sessionActive) return
         val nm = getSystemService(NotificationManager::class.java)
         try {
-            nm.notify(NOTIFICATION_ID, buildNotification(title, text))
+            nm.notify(NOTIFICATION_ID, buildNotification(title, text, chronometerFrom))
         } catch (e: SecurityException) {
             // Notifications are off; the session runs regardless.
         }
     }
 
-    private fun buildNotification(title: String, text: String): Notification {
+    /** [chronometerFrom] is the wall-clock start: the system then runs the elapsed time without re-posts. */
+    private fun buildNotification(title: String, text: String, chronometerFrom: Long?): Notification {
         val open = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
@@ -740,6 +798,15 @@ class CaptureService : LifecycleService(), StackRenderer.Listener {
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .setContentIntent(open)
             .addAction(R.drawable.ic_stat_stop, "Stop", stop)
+            .apply {
+                if (chronometerFrom != null) {
+                    setWhen(chronometerFrom)
+                    setShowWhen(true)
+                    setUsesChronometer(true)
+                } else {
+                    setShowWhen(false)
+                }
+            }
             .build()
     }
 

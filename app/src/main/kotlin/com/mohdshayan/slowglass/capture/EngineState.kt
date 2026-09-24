@@ -62,4 +62,6 @@ data class EngineState(
     val notice: String? = null,
     val noticeId: Long = 0,
     val check: CheckProgress = CheckProgress.Idle,
+    /** Set at launch when the last session was killed before it could save; shown until dismissed. */
+    val interrupted: String? = null,
 )

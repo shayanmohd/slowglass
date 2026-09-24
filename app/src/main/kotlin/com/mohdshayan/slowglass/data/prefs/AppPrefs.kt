@@ -16,12 +16,16 @@ import com.mohdshayan.slowglass.core.stack.NoiseSmoothing
 import com.mohdshayan.slowglass.core.stack.StackMode
 import com.mohdshayan.slowglass.core.stack.StarSensitivity
 import com.mohdshayan.slowglass.core.timer.BulbPreset
+import com.mohdshayan.slowglass.core.timer.InProgressSession
 import com.mohdshayan.slowglass.core.timer.TripodDelay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "app_prefs")
+
+// Its own file, so the session record written during a session never re-emits the settings.
+private val Context.sessionStore: DataStore<Preferences> by preferencesDataStore(name = "session_record")
 
 enum class ThemeMode(val id: String, val label: String) {
     SYSTEM("system", "Follow the phone"),
@@ -75,6 +79,10 @@ class AppPrefs(private val context: Context) {
         val COUNT_SESSIONS = intPreferencesKey("count_sessions")
         val COUNT_SAVES = intPreferencesKey("count_saves")
         val COUNT_STRIKES = intPreferencesKey("count_strikes")
+        val RUN_MODE = stringPreferencesKey("run_mode")
+        val RUN_STARTED = longPreferencesKey("run_started_at")
+        val RUN_ALIVE = longPreferencesKey("run_last_alive_at")
+        val RUN_STRIKES = intPreferencesKey("run_strikes")
     }
 
     val settings: Flow<Settings> = context.dataStore.data.map { p ->
@@ -128,6 +136,28 @@ class AppPrefs(private val context: Context) {
             if (saved) it[Keys.COUNT_SAVES] = (it[Keys.COUNT_SAVES] ?: 0) + 1
             it[Keys.COUNT_STRIKES] = (it[Keys.COUNT_STRIKES] ?: 0) + strikes
         }
+    }
+
+    /** The session now running, rewritten as it goes; see [InProgressSession]. */
+    suspend fun markInProgress(r: InProgressSession) {
+        context.sessionStore.edit {
+            it[Keys.RUN_MODE] = r.modeId
+            it[Keys.RUN_STARTED] = r.startedAtMs
+            it[Keys.RUN_ALIVE] = r.lastAliveMs
+            it[Keys.RUN_STRIKES] = r.strikes
+        }
+    }
+
+    suspend fun clearInProgress() {
+        context.sessionStore.edit { it.clear() }
+    }
+
+    /** A session recorded as running, or null. Read at launch, before any new session starts. */
+    suspend fun inProgress(): InProgressSession? {
+        val p = context.sessionStore.data.first()
+        val mode = p[Keys.RUN_MODE] ?: return null
+        val started = p[Keys.RUN_STARTED] ?: return null
+        return InProgressSession(mode, started, p[Keys.RUN_ALIVE] ?: started, p[Keys.RUN_STRIKES] ?: 0)
     }
 
     suspend fun clearCounts() = set {

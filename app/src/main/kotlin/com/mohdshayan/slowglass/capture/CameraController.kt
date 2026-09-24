@@ -5,6 +5,9 @@ import android.graphics.SurfaceTexture
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CaptureRequest
 import android.hardware.display.DisplayManager
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
 import android.util.Range
 import android.util.Size
 import android.view.Display
@@ -55,7 +58,8 @@ data class CameraFacts(
         fpsRanges.filter { it.upper == 30 }.maxByOrNull { it.lower }
 }
 
-enum class CamStatus { STARTING, READY, IN_USE, DISABLED, NO_CAMERA, FAILED }
+/** STALLED: bound and meant to be open, but neither OPEN nor frames came; the screen offers Retry. */
+enum class CamStatus { STARTING, READY, IN_USE, DISABLED, NO_CAMERA, FAILED, STALLED }
 
 /**
  * CameraX, owned by the capture service. It has its own lifecycle so the camera opens when the
@@ -81,6 +85,44 @@ class CameraController(
         private set
     private var stateObserver: Observer<CameraState>? = null
 
+    private val readiness = CameraReadiness()
+    @Volatile private var ready = false
+    // Frames count only from the surface served for the latest bind, never from a stream being torn down.
+    @Volatile private var bindGen = 0
+    @Volatile private var servedGen = -1
+    private val main = Handler(Looper.getMainLooper())
+    private val watchdog = object : Runnable {
+        override fun run() {
+            val s = emit { onTick(SystemClock.elapsedRealtime(), isOpen) }
+            if (s == CamStatus.STARTING && isOpen) main.postDelayed(this, 1000)
+        }
+    }
+
+    /** Runs one readiness step and reports its result. Any thread; frames arrive on the render thread. */
+    private inline fun emit(step: CameraReadiness.() -> CamStatus): CamStatus = synchronized(readiness) {
+        val s = readiness.step()
+        ready = s == CamStatus.READY
+        onStatus(s)
+        s
+    }
+
+    /** Main thread: while the camera should be open and is still starting, check it once a second. */
+    private fun armWatchdog() {
+        main.removeCallbacks(watchdog)
+        val starting = synchronized(readiness) { readiness.status == CamStatus.STARTING }
+        if (isOpen && starting) main.postDelayed(watchdog, 1000)
+    }
+
+    /** A camera frame reached the renderer (render thread). Cheap once the camera is ready. */
+    fun onFrame() {
+        if (!ready && servedGen == bindGen) emit { onFrame() }
+    }
+
+    /** A failure only a new bind clears, such as the renderer's GL failing. */
+    fun fail() {
+        emit { onFailure(CamStatus.FAILED) }
+    }
+
     fun init(onReady: () -> Unit) {
         val future = ProcessCameraProvider.getInstance(context)
         future.addListener({
@@ -89,7 +131,7 @@ class CameraController(
             } catch (e: Exception) {
                 null
             }
-            if (provider == null) onStatus(CamStatus.FAILED)
+            if (provider == null) emit { onFailure(CamStatus.FAILED) }
             onReady()
         }, ContextCompat.getMainExecutor(context))
     }
@@ -108,10 +150,12 @@ class CameraController(
     fun bind(target: Size) {
         val p = provider ?: return
         if (!hasBackCamera) {
-            onStatus(CamStatus.NO_CAMERA)
+            emit { onFailure(CamStatus.NO_CAMERA) }
             return
         }
         unbind()
+        val gen = ++bindGen
+        emit { onBind(SystemClock.elapsedRealtime()) }
         val selector = ResolutionSelector.Builder()
             .setAspectRatioStrategy(AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY)
             .setResolutionStrategy(ResolutionStrategy(target, ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER))
@@ -126,24 +170,26 @@ class CameraController(
             boundTarget = target
             facts = readFacts(cam)
             val rotation = facts?.sensorRotation ?: 90
-            preview.setSurfaceProvider(renderer.executor) { request -> renderer.provideSurface(request, rotation) }
+            preview.setSurfaceProvider(renderer.executor) { request ->
+                renderer.provideSurface(request, rotation)
+                servedGen = gen
+            }
             val obs = Observer<CameraState> { s ->
-                val err = s.error
-                onStatus(
-                    when {
-                        err == null && s.type == CameraState.Type.OPEN -> CamStatus.READY
-                        err == null -> CamStatus.STARTING
-                        err.code == CameraState.ERROR_CAMERA_IN_USE || err.code == CameraState.ERROR_MAX_CAMERAS_IN_USE -> CamStatus.IN_USE
-                        err.code == CameraState.ERROR_CAMERA_DISABLED || err.code == CameraState.ERROR_DO_NOT_DISTURB_MODE_ENABLED -> CamStatus.DISABLED
-                        s.type == CameraState.Type.OPEN -> CamStatus.READY
+                val error = s.error?.let { err ->
+                    when (err.code) {
+                        CameraState.ERROR_CAMERA_IN_USE, CameraState.ERROR_MAX_CAMERAS_IN_USE -> CamStatus.IN_USE
+                        CameraState.ERROR_CAMERA_DISABLED, CameraState.ERROR_DO_NOT_DISTURB_MODE_ENABLED -> CamStatus.DISABLED
                         else -> CamStatus.FAILED
-                    },
-                )
+                    }
+                }
+                emit { onPublished(s.type == CameraState.Type.OPEN, error, SystemClock.elapsedRealtime()) }
+                armWatchdog()
             }
             cam.cameraInfo.cameraState.observeForever(obs)
             stateObserver = obs
+            armWatchdog()
         } catch (e: Exception) {
-            onStatus(CamStatus.FAILED)
+            emit { onFailure(CamStatus.FAILED) }
         }
     }
 
@@ -161,12 +207,16 @@ class CameraController(
     /** Opens or closes the camera without unbinding. Main thread only. */
     fun setOpen(open: Boolean) {
         if (registry.currentState == Lifecycle.State.DESTROYED) return
+        // Opening restarts the stall wait, so time spent closed never counts as a stall.
+        if (open && !isOpen) emit { onTick(SystemClock.elapsedRealtime(), wantOpen = false) }
         registry.currentState = if (open) Lifecycle.State.RESUMED else Lifecycle.State.CREATED
+        if (open) armWatchdog() else main.removeCallbacks(watchdog)
     }
 
     val isOpen: Boolean get() = registry.currentState.isAtLeast(Lifecycle.State.STARTED)
 
     fun release() {
+        main.removeCallbacks(watchdog)
         unbind()
         registry.currentState = Lifecycle.State.DESTROYED
     }

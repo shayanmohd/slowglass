@@ -46,6 +46,7 @@ class CaptureViewModel(app: Application) : AndroidViewModel(app) {
     fun setEv(ev: Float) = service?.setEv(ev)
     fun focusAt(u: Float, v: Float) = service?.focusAt(u, v)
     fun clearNotice() = service?.clearNotice()
+    fun dismissInterrupted() = service?.dismissInterrupted()
 
     fun shutter() {
         val s = service ?: return
