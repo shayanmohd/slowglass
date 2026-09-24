@@ -32,6 +32,7 @@ Photos are saved at the size your camera streams to the app, often 1920 x 1080. 
 
 A CAMERA CHECK BEFORE YOU RELY ON IT
 On first launch a short camera check measures what your phone can do: the stream size, the frame rate while stacking, whether a low frame rate for stars is accepted, and whether infinity focus works. Share the report if you need help.
+Tested on a Samsung Galaxy S22+ running Android 14, where stacks save at 3840 x 2160.
 
 YOUR SESSIONS, YOUR FILES
 Photos are ordinary files in Pictures/Slowglass. Export the session log as JSON or CSV, or send it through the share sheet, and import the JSON on a new phone.
