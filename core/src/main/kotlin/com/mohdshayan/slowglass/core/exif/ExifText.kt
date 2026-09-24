@@ -22,6 +22,16 @@ object ExifText {
         return "1/$perSecond"
     }
 
+    /**
+     * EXIF ExposureTime for a lightning strike photo, which combines [frames] frames of the stream
+     * (the pre-roll ring plus the frames after the flash) at the measured interval [frameNs].
+     * Until an interval has been measured, 30 frames a second is assumed.
+     */
+    fun strikeExposureRational(frameNs: Long, frames: Int): String {
+        val perFrame = if (frameNs > 0) frameNs else 33_333_333L
+        return exposureTimeRational((perFrame * frames.coerceAtLeast(1) + 500_000) / 1_000_000)
+    }
+
     /** 42 s, 6 min 45 s, 2 min, or 0.4 s inside the first second. */
     fun length(durationMs: Long): String {
         val seconds = durationMs.coerceAtLeast(0) / 1000

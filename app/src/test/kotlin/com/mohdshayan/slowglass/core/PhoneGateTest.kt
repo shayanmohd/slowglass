@@ -106,6 +106,20 @@ class PhoneGateTest {
     }
 
     @Test
+    fun aStrikePhotoCountsItsPreRollAndItsFramesAfterTheFlash() {
+        // 6 pre-roll plus 12 after the flash at 30 fps is 0.6 s, not the old fixed 12/30.
+        assertEquals("600/1000", ExifText.strikeExposureRational(33_333_333, 18))
+        // The same 18 frames at the 1080p 25 fps the S22+ gave Lightning is 0.72 s.
+        assertEquals("720/1000", ExifText.strikeExposureRational(40_000_000, 18))
+        // A low RAM phone keeps 3 pre-roll frames: 15 frames at 30 fps is 0.5 s.
+        assertEquals("500/1000", ExifText.strikeExposureRational(33_333_333, 15))
+        // Before any interval is measured, 30 fps is assumed.
+        assertEquals("600/1000", ExifText.strikeExposureRational(0, 18))
+        // A slow stream reaching whole seconds is written as seconds.
+        assertEquals("2/1", ExifText.strikeExposureRational(125_000_000, 16))
+    }
+
+    @Test
     fun lengthWordsMatchTheExifDescription() {
         assertEquals("42 s", ExifText.length(42_400))
         assertEquals("6 min 45 s", ExifText.length(405_000))

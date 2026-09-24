@@ -110,6 +110,7 @@ class CaptureService : LifecycleService(), StackRenderer.Listener {
     private var startedRealtime = 0L
     private var sessionRotation = 0
     private var sessionMode = StackMode.TRAILS
+    private var sessionPreRoll = 6
     private var sessionSettings = Settings()
     private val runningFrames = AtomicInteger(0)
     // First and latest camera timestamps while stacking, for the real frame duration.
@@ -409,6 +410,7 @@ class CaptureService : LifecycleService(), StackRenderer.Listener {
             sessionRotation = orientation.latch(displayRotationDegrees())
             clip?.rewind()
             val lowRam = getSystemService(ActivityManager::class.java).isLowRamDevice
+            sessionPreRoll = if (lowRam) 3 else 6
             renderer.beginSession(
                 StackConfig(
                     mode = sessionMode,
@@ -420,7 +422,7 @@ class CaptureService : LifecycleService(), StackRenderer.Listener {
                     keepLights = sessionSettings.keepLights,
                     lightningThreshold = sessionSettings.lightningSensitivity.threshold,
                     pixelsPerDegree = ppd,
-                    preRollFrames = if (lowRam) 3 else 6,
+                    preRollFrames = sessionPreRoll,
                 ),
             )
             runFirstNs.set(0)
@@ -639,13 +641,16 @@ class CaptureService : LifecycleService(), StackRenderer.Listener {
 
     override fun onStrike(pixels: Pixels, peakDelta: Float) {
         val at = System.currentTimeMillis()
+        // The strike photo holds the pre-roll ring plus the frames after the flash, at the measured interval.
+        val frameNs = runningFrames.get().let { n -> if (n >= 2) (runLastNs.get() - runFirstNs.get()) / (n - 1) else 0L }
+        val exposure = ExifText.strikeExposureRational(frameNs, sessionPreRoll + StackRenderer.FRAMES_AFTER_STRIKE)
         lifecycleScope.launch {
             val n = strikes.size + 1
             try {
                 val stem = ExifText.fileStem(PhotoSaver.stamp(startedWall), sessionMode.id)
                 val uri: Uri = saver.save(
                     pixels, sessionRotation, "${stem}_strike$n.jpg",
-                    PhotoMeta(at, "12/30", "Slowglass Lightning, strike $n"),
+                    PhotoMeta(at, exposure, "Slowglass Lightning, strike $n"),
                 )
                 strikes += StrikeEntity(sessionId = 0, at = at, peakDelta = peakDelta, photoUri = uri.toString())
                 _state.update { it.copy(strikes = strikes.size) }
